@@ -3,17 +3,17 @@ const User = require('../models/User.model');
 /** GET /api/users  — admin only */
 const getUsers = async (req, res) => {
   try {
-    const users = await User.find({ role: { $ne: 'admin' } }).sort({ createdAt: -1 });
+    const users = await User.find({ roleNe: 'admin' });
     res.json({ users, count: users.length });
   } catch (err) {
     res.status(500).json({ message: 'Failed to fetch users.', error: err.message });
   }
 };
 
-/** GET /api/users/all — admin + team-head: list for task assignment dropdown */
+/** GET /api/users/assignable — admin + team-head: list for task assignment dropdown */
 const getAllUsers = async (req, res) => {
   try {
-    const users = await User.find({}).select('name email role').sort({ name: 1 });
+    const users = await User.find({}, { select: 'id, name, email, role' });
     res.json({ users });
   } catch (err) {
     res.status(500).json({ message: 'Failed to fetch users.', error: err.message });
@@ -39,7 +39,7 @@ const createUser = async (req, res) => {
     const user = await User.create({ name, email, password, role: finalRole });
     res.status(201).json({
       message: 'User created.',
-      user: { id: user._id, name: user.name, email: user.email, role: user.role },
+      user: { id: user.id, name: user.name, email: user.email, role: user.role },
     });
   } catch (err) {
     res.status(500).json({ message: 'Failed to create user.', error: err.message });
@@ -57,11 +57,7 @@ const updateUserRole = async (req, res) => {
     if (!allowedRoles.includes(role))
       return res.status(400).json({ message: 'Invalid role.' });
 
-    const user = await User.findByIdAndUpdate(
-      req.params.id,
-      { role },
-      { new: true }
-    );
+    const user = await User.findByIdAndUpdate(req.params.id, { role });
     if (!user) return res.status(404).json({ message: 'User not found.' });
 
     res.json({ message: 'Role updated.', user });
@@ -73,7 +69,7 @@ const updateUserRole = async (req, res) => {
 /** DELETE /api/users/:id  — admin only */
 const deleteUser = async (req, res) => {
   try {
-    if (req.params.id === req.user._id.toString())
+    if (req.params.id === req.user.id)
       return res.status(400).json({ message: 'You cannot delete yourself.' });
 
     const user = await User.findByIdAndDelete(req.params.id);

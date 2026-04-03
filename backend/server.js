@@ -1,7 +1,7 @@
 require('dotenv').config();
-const express  = require('express');
-const cors     = require('cors');
-const mongoose = require('mongoose');
+const express = require('express');
+const cors    = require('cors');
+const pool    = require('./db/pool');
 
 const authRoutes = require('./routes/auth.routes');
 const taskRoutes = require('./routes/task.routes');
@@ -19,27 +19,23 @@ app.use('/api/tasks', taskRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/teams', teamRoutes);
 
-app.get('/api/health', (req, res) => res.json({ status: 'OK' }));
+app.get('/api/health', (req, res) => res.json({ status: 'OK', db: 'PostgreSQL' }));
 app.use((req, res) => res.status(404).json({ message: 'Route not found' }));
 app.use((err, req, res, next) => {
   console.error(err.stack);
   res.status(500).json({ message: 'Internal server error', error: err.message });
 });
 
-// ─── DB + Start ───────────────────────────────────────────────────────────────
+// ─── Start ────────────────────────────────────────────────────────────────────
 const PORT = process.env.PORT || 4000;
 
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(async () => {
-    console.log('✅ MongoDB connected');
-    // Seed admin if none exists
-    const User = require('./models/User.model');
-    const admin = await User.findOne({ role: 'admin' });
-    if (!admin) {
-      await User.create({ name: 'Admin', email: 'admin@taskflow.com', password: 'admin123', role: 'admin' });
-      console.log('🌱 Admin seeded: admin@taskflow.com / admin123');
-    }
+pool.query('SELECT NOW()')
+  .then(() => {
+    console.log('✅ PostgreSQL connected');
     app.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
+    console.log('💡 First time? Run: npm run db:init');
   })
-  .catch(err => { console.error('❌ MongoDB failed:', err.message); process.exit(1); });
+  .catch(err => {
+    console.error('❌ PostgreSQL connection failed:', err.message);
+    process.exit(1);
+  });

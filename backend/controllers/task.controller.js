@@ -1,10 +1,6 @@
 const Task = require('../models/Task.model');
 const Team = require('../models/Team.model');
-
-const populateTask = q => q
-  .populate('assigned_to',   'name email role')
-  .populate({ path: 'assigned_team', select: 'name', populate: { path: 'members', select: 'name email role' } })
-  .populate('created_by',    'name email role');
+const pool = require('../db/pool');
 
 /**
  * GET /api/tasks
@@ -13,20 +9,18 @@ const populateTask = q => q
  */
 const getTasks = async (req, res) => {
   try {
-    let filter = {};
-    if (req.user.role !== 'admin') {
-      const myTeams = await Team.find({ members: req.user._id }).select('_id');
-      const teamIds = myTeams.map(t => t._id);
-      filter = {
-        $or: [
-          { assignment_type: 'user',  assigned_to:   req.user._id },
-          { assignment_type: 'self',  assigned_to:   req.user._id },
-          { assignment_type: 'team',  assigned_team: { $in: teamIds } },
-          { created_by: req.user._id },          // own created tasks (unassigned ones)
-        ],
-      };
+    let tasks;
+    if (req.user.role === 'admin') {
+      tasks = await Task.find();  // no filter → all
+    } else {
+      // Get team IDs the user belongs to
+      const { rows: teamRows } = await pool.query(
+        'SELECT team_id FROM team_members WHERE user_id = $1',
+        [req.user.id]
+      );
+      const teamIds = teamRows.map(r => r.team_id);
+      tasks = await Task.find({ userId: req.user.id, teamIds });
     }
-    const tasks = await populateTask(Task.find(filter).sort({ createdAt: -1 }));
     res.json({ tasks, count: tasks.length });
   } catch (err) {
     res.status(500).json({ message: 'Failed to fetch tasks.', error: err.message });
@@ -48,22 +42,21 @@ const createTask = async (req, res) => {
       description: description || '',
       priority:    priority    || 'medium',
       status:      status      || 'pending',
-      created_by:  req.user._id,
+      created_by:  req.user.id,
     };
 
     if (req.user.role === 'admin') {
       const at = assignment_type || 'user';
       taskData.assignment_type = at;
-      taskData.assigned_to     = at === 'user' ? (assigned_to || null) : null;
+      taskData.assigned_to     = at === 'user' ? (assigned_to   || null) : null;
       taskData.assigned_team   = at === 'team' ? (assigned_team || null) : null;
     } else {
       taskData.assignment_type = 'self';
-      taskData.assigned_to     = req.user._id;
+      taskData.assigned_to     = req.user.id;
     }
 
     const task = await Task.create(taskData);
-    const populated = await populateTask(Task.findById(task._id));
-    res.status(201).json({ message: 'Task created.', task: populated });
+    res.status(201).json({ message: 'Task created.', task });
   } catch (err) {
     res.status(500).json({ message: 'Failed to create task.', error: err.message });
   }
@@ -81,39 +74,41 @@ const updateTask = async (req, res) => {
 
     // Check access
     if (req.user.role !== 'admin') {
-      const isDirectAssignee = task.assigned_to?.toString() === req.user._id.toString();
-      const isCreator = task.created_by?.toString() === req.user._id.toString();
+      const isDirectAssignee = task.assigned_to === req.user.id;
+      const isCreator        = task.created_by  === req.user.id;
 
       let isTeamMember = false;
       if (task.assignment_type === 'team' && task.assigned_team) {
-        const team = await Team.findById(task.assigned_team);
-        if (team) isTeamMember = team.members.some(m => m.toString() === req.user._id.toString());
+        const { rows } = await pool.query(
+          'SELECT 1 FROM team_members WHERE team_id = $1 AND user_id = $2',
+          [task.assigned_team, req.user.id]
+        );
+        isTeamMember = rows.length > 0;
       }
 
-      if (!isDirectAssignee && !isCreator && !isTeamMember) {
+      if (!isDirectAssignee && !isCreator && !isTeamMember)
         return res.status(403).json({ message: 'Access denied.' });
-      }
     }
 
-    // Everyone can update content
+    // Build update payload
+    const fields = {};
     const { title, description, status, priority } = req.body;
-    if (title       !== undefined) task.title       = title;
-    if (description !== undefined) task.description = description;
-    if (status      !== undefined) task.status      = status;
-    if (priority    !== undefined) task.priority    = priority;
+    if (title       !== undefined) fields.title       = title;
+    if (description !== undefined) fields.description = description;
+    if (status      !== undefined) fields.status      = status;
+    if (priority    !== undefined) fields.priority    = priority;
 
     // Only admin can reassign
     if (req.user.role === 'admin') {
       const { assignment_type, assigned_to, assigned_team } = req.body;
       if (assignment_type !== undefined) {
-        task.assignment_type = assignment_type;
-        task.assigned_to     = assignment_type === 'user' ? (assigned_to || null) : null;
-        task.assigned_team   = assignment_type === 'team' ? (assigned_team || null) : null;
+        fields.assignment_type = assignment_type;
+        fields.assigned_to     = assignment_type === 'user' ? (assigned_to   || null) : null;
+        fields.assigned_team   = assignment_type === 'team' ? (assigned_team || null) : null;
       }
     }
 
-    await task.save();
-    const updated = await populateTask(Task.findById(task._id));
+    const updated = await Task.update(req.params.id, fields);
     res.json({ message: 'Task updated.', task: updated });
   } catch (err) {
     res.status(500).json({ message: 'Failed to update task.', error: err.message });
@@ -132,12 +127,12 @@ const deleteTask = async (req, res) => {
 
     if (req.user.role !== 'admin') {
       const ok =
-        task.assigned_to?.toString() === req.user._id.toString() ||
-        task.created_by?.toString()  === req.user._id.toString();
+        task.assigned_to === req.user.id ||
+        task.created_by  === req.user.id;
       if (!ok) return res.status(403).json({ message: 'Access denied.' });
     }
 
-    await task.deleteOne();
+    await Task.deleteOne(req.params.id);
     res.json({ message: 'Task deleted.' });
   } catch (err) {
     res.status(500).json({ message: 'Failed to delete task.', error: err.message });
