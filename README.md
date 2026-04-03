@@ -1,282 +1,109 @@
-# TaskFlow — Multi-Tenant SaaS Todo App
+# TaskFlow — AWS Free Tier Deployment Guide
 
-A full-stack MERN application where each client gets an isolated workspace via subdomain.
+## Architecture (100% Free Tier)
 
-```
-client1.app.com  →  tenant: "client1"  →  sees only client1's data
-team.app.com     →  tenant: "team"     →  sees only team's data
-```
+| Service | AWS Resource | Free Tier Limit |
+|---|---|---|
+| **Database** | RDS PostgreSQL `db.t3.micro` | 750 hrs/month, 20 GB storage (12 months) |
+| **Backend** | Elastic Beanstalk → EC2 `t2.micro` | 750 hrs/month (12 months) |
+| **Frontend** | Amplify Hosting | 1000 build mins, 15 GB/month |
 
----
-
-## Project Structure
-
-```
-multitenant-todo/
-├── backend/
-│   ├── server.js                   # Express entry point
-│   ├── .env.example
-│   ├── models/
-│   │   ├── User.model.js           # name, email, password, role, tenant
-│   │   └── Task.model.js           # title, desc, status, assigned_to, tenant
-│   ├── middleware/
-│   │   ├── tenant.middleware.js    # Extract subdomain → req.tenant
-│   │   └── auth.middleware.js      # JWT verify + role guard
-│   ├── controllers/
-│   │   ├── auth.controller.js
-│   │   ├── task.controller.js
-│   │   ├── user.controller.js
-│   │   └── tenant.controller.js
-│   └── routes/
-│       ├── auth.routes.js
-│       ├── task.routes.js
-│       ├── user.routes.js
-│       └── tenant.routes.js
-└── frontend/
-    ├── index.html
-    ├── vite.config.js
-    ├── tailwind.config.js
-    ├── .env.example
-    └── src/
-        ├── main.jsx
-        ├── App.jsx                 # Routes + guards
-        ├── index.css
-        ├── utils/api.js            # Axios + tenant injector
-        ├── context/AuthContext.jsx # Global auth state
-        ├── components/Layout.jsx   # Sidebar nav
-        └── pages/
-            ├── LoginPage.jsx
-            ├── DashboardPage.jsx
-            ├── TasksPage.jsx
-            ├── CreateTaskPage.jsx
-            └── UsersPage.jsx
-```
+> ⚠️ All free tier benefits apply for **12 months** from account creation.
 
 ---
 
-## Prerequisites
+## Step 1 — RDS PostgreSQL (Free Tier Database)
 
-- Node.js 18+
-- MongoDB (local or Atlas)
-- npm
+1. **AWS Console → RDS → Create database**
+2. Choose: **Standard Create → PostgreSQL**
+3. Template: ✅ **Free tier** (auto-selects `db.t3.micro`)
+4. Settings:
+   - DB instance identifier: `taskflow-db`
+   - Master username: `postgres`
+   - Master password: *(pick a strong one, save it)*
+5. Storage: `20 GiB` (free tier max)
+6. Connectivity:
+   - Public access: **Yes**
+   - VPC Security Group: create new → name it `taskflow-rds-sg`
+7. **Create database** (takes ~5 mins)
+8. After creation, go to its **Security Group → Inbound rules → Edit**
+   - Add rule: `PostgreSQL | TCP | 5432 | 0.0.0.0/0`
+9. Copy the **Endpoint** (e.g. `taskflow-db.xxxx.us-east-1.rds.amazonaws.com`)
+
+**Initialize the schema from your local machine:**
+```bash
+DATABASE_URL="postgresql://postgres:<password>@<rds-endpoint>:5432/postgres" \
+  node backend/db/init.js
+```
+> Note: connect to the default `postgres` database — `init.js` creates the `taskflow` tables there.
 
 ---
 
-## Setup
+## Step 2 — Elastic Beanstalk (Free Tier Backend)
 
-### 1. Backend
+1. **AWS Console → Elastic Beanstalk → Create application**
+2. Application name: `taskflow-backend`
+3. Platform: **Node.js** | Platform branch: **Node.js 18**
+4. Application code: **Upload your code**
+   - Zip the repo: `git archive --format=zip HEAD > taskflow.zip`
+   - Upload `taskflow.zip`
+5. Preset: **Single instance (Free Tier eligible)** ✅
+6. Click **Configure more options** → Software → Environment properties, add:
+   ```
+   DATABASE_URL   = postgresql://postgres:<password>@<rds-endpoint>:5432/postgres
+   DATABASE_SSL   = true
+   JWT_SECRET     = <any long random string>
+   JWT_EXPIRES_IN = 7d
+   NODE_ENV       = production
+   PORT           = 4000
+   ```
+7. **Create environment** (takes ~3 mins)
+8. Copy the EB URL (e.g. `http://taskflow-backend.us-east-1.elasticbeanstalk.com`)
+
+---
+
+## Step 3 — Amplify (Free Tier Frontend)
+
+1. **AWS Console → Amplify → New app → Host web app**
+2. Connect **GitHub** → authorize → select `cx-code-11/taskflow` → branch `main`
+3. Build settings: Amplify auto-detects `amplify.yml` ✅ already in repo
+4. Add environment variable:
+   ```
+   VITE_API_URL = http://taskflow-backend.us-east-1.elasticbeanstalk.com
+   ```
+   *(paste your EB URL from Step 2)*
+5. **Save and deploy** — Amplify gives a free `*.amplifyapp.com` URL
+
+---
+
+## Local Development
 
 ```bash
-cd backend
-cp .env.example .env
-# Edit .env:
-#   MONGO_URI=mongodb://localhost:27017/multitenant_todo
-#   JWT_SECRET=change_me_in_production
-#   JWT_EXPIRES_IN=7d
-#   PORT=4000
+# 1. Copy and fill in your local .env
+cp backend/.env.example backend/.env
+# Set DATABASE_URL=postgresql://arung@localhost:5432/taskflow
 
-npm install
+# 2. Initialize DB schema + seed admin
+cd backend && npm run db:init
+
+# 3. Run backend
 npm run dev
-# Server running on http://localhost:4000
+
+# 4. Run frontend (new terminal)
+cd frontend && npm run dev
 ```
 
-### 2. Frontend
-
-```bash
-cd frontend
-cp .env.example .env
-# Edit .env:
-#   VITE_API_URL=http://localhost:4000
-
-npm install
-npm run dev
-# App running on http://localhost:5173
-```
+**Default admin:** `admin@taskflow.com` / `admin123`
 
 ---
 
-## Environment Variables
+## Environment Variables Reference
 
-### Backend `.env`
-```env
-PORT=4000
-MONGO_URI=mongodb://localhost:27017/multitenant_todo
-JWT_SECRET=your_super_secret_jwt_key_change_in_production
-JWT_EXPIRES_IN=7d
-```
-
-### Frontend `.env`
-```env
-VITE_API_URL=http://localhost:4000
-```
-
----
-
-## First-time Setup: Create a Tenant
-
-Use `X-Tenant` header to simulate subdomains locally.
-
-```bash
-# Create tenant "client1" with an admin user
-curl -X POST http://localhost:4000/api/tenants \
-  -H "Content-Type: application/json" \
-  -H "X-Tenant: client1" \
-  -d '{
-    "tenantName": "client1",
-    "adminName": "Alice Admin",
-    "adminEmail": "alice@client1.com",
-    "adminPassword": "secret123"
-  }'
-```
-
-```bash
-# Create a second tenant "team"
-curl -X POST http://localhost:4000/api/tenants \
-  -H "Content-Type: application/json" \
-  -H "X-Tenant: team" \
-  -d '{
-    "tenantName": "team",
-    "adminName": "Bob Admin",
-    "adminEmail": "bob@team.com",
-    "adminPassword": "secret123"
-  }'
-```
-
----
-
-## API Reference
-
-### Authentication
-
-```bash
-# Login
-curl -X POST http://localhost:4000/api/auth/login \
-  -H "Content-Type: application/json" \
-  -H "X-Tenant: client1" \
-  -d '{"email":"alice@client1.com","password":"secret123"}'
-# → { token: "eyJ...", user: { id, name, email, role, tenant } }
-
-# Get current user
-curl http://localhost:4000/api/auth/me \
-  -H "Authorization: Bearer <TOKEN>" \
-  -H "X-Tenant: client1"
-```
-
-### Users (admin only)
-
-```bash
-# List users
-curl http://localhost:4000/api/users \
-  -H "Authorization: Bearer <TOKEN>" \
-  -H "X-Tenant: client1"
-
-# Create user
-curl -X POST http://localhost:4000/api/users \
-  -H "Authorization: Bearer <TOKEN>" \
-  -H "X-Tenant: client1" \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Carol","email":"carol@client1.com","password":"pass123","role":"team"}'
-
-# Delete user
-curl -X DELETE http://localhost:4000/api/users/<USER_ID> \
-  -H "Authorization: Bearer <TOKEN>" \
-  -H "X-Tenant: client1"
-```
-
-### Tasks
-
-```bash
-# List tasks (filtered by role)
-curl http://localhost:4000/api/tasks \
-  -H "Authorization: Bearer <TOKEN>" \
-  -H "X-Tenant: client1"
-
-# Create task (admin only)
-curl -X POST http://localhost:4000/api/tasks \
-  -H "Authorization: Bearer <TOKEN>" \
-  -H "X-Tenant: client1" \
-  -H "Content-Type: application/json" \
-  -d '{"title":"Fix login bug","description":"Urgent","assigned_to":"<USER_ID>"}'
-
-# Update task status (admin + team)
-curl -X PATCH http://localhost:4000/api/tasks/<TASK_ID> \
-  -H "Authorization: Bearer <TOKEN>" \
-  -H "X-Tenant: client1" \
-  -H "Content-Type: application/json" \
-  -d '{"status":"in-progress"}'
-
-# Delete task (admin only)
-curl -X DELETE http://localhost:4000/api/tasks/<TASK_ID> \
-  -H "Authorization: Bearer <TOKEN>" \
-  -H "X-Tenant: client1"
-```
-
----
-
-## Role Permissions
-
-| Action              | Admin | Team | Client |
-|---------------------|-------|------|--------|
-| Create tenant       | ✅    | ❌   | ❌     |
-| Create users        | ✅    | ❌   | ❌     |
-| View all tasks      | ✅    | ❌   | ❌     |
-| View own tasks      | ✅    | ✅   | ✅     |
-| Create tasks        | ✅    | ❌   | ❌     |
-| Update task status  | ✅    | ✅   | ❌     |
-| Delete tasks        | ✅    | ❌   | ❌     |
-
----
-
-## Multi-Tenant Architecture
-
-### How tenant isolation works:
-
-1. **Request arrives** → `extractTenant` middleware reads `X-Tenant` header or parses subdomain from `Host`
-2. **Auth check** → JWT is verified; token's `tenant` field must match `req.tenant`
-3. **All DB queries** filter by `{ tenant: req.tenant }` — data from other tenants is never returned
-4. **Compound index** on `(email, tenant)` means the same email can exist across tenants
-
-### Subdomain setup for production (Nginx):
-
-```nginx
-server {
-    listen 80;
-    server_name *.app.com;
-
-    location /api/ {
-        proxy_pass http://localhost:4000;
-        proxy_set_header Host $host;
-    }
-
-    location / {
-        root /var/www/taskflow/dist;
-        try_files $uri $uri/ /index.html;
-    }
-}
-```
-
----
-
-## Production Deployment
-
-```bash
-# Build frontend
-cd frontend && npm run build
-# Output in frontend/dist/ — serve with Nginx
-
-# Backend with PM2
-npm install -g pm2
-cd backend && pm2 start server.js --name taskflow-api
-```
-
----
-
-## Frontend Pages
-
-| Page | Route | Roles |
-|------|-------|-------|
-| Login | `/login` | Public |
-| Dashboard | `/dashboard` | All |
-| Task List | `/tasks` | All |
-| Create Task | `/tasks/new` | Admin |
-| User Management | `/users` | Admin |
+| Variable | Description | Example |
+|---|---|---|
+| `DATABASE_URL` | PostgreSQL connection string | `postgresql://postgres:pass@host:5432/postgres` |
+| `DATABASE_SSL` | Enable SSL for RDS | `true` |
+| `JWT_SECRET` | JWT signing secret | `super_secret_key_here` |
+| `JWT_EXPIRES_IN` | Token expiry | `7d` |
+| `PORT` | Backend port | `4000` |
+| `VITE_API_URL` | Backend URL (frontend build) | `http://your-eb-url.com` |
